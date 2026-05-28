@@ -173,6 +173,11 @@
         <label for="startDate">Дата начала воздержания</label>
         <input id="startDate" type="datetime-local" />
 
+        <label for="apiKey">Kie.ai API ключ (для Gemini)</label>
+        <input id="apiKey" type="password" placeholder="Вставь ключ, например b0b6..." />
+
+        <button id="testAiBtn" type="button">Проверить подключение Gemini</button>
+
         <button id="saveBtn" class="btn-primary">Запустить трекер</button>
         <button id="resetBtn" class="btn-danger">Сбросить результат</button>
       </div>
@@ -214,8 +219,11 @@
       name: document.getElementById('name'),
       birthDate: document.getElementById('birthDate'),
       habit: document.getElementById('habit'),
-      startDate: document.getElementById('startDate')
+      startDate: document.getElementById('startDate'),
+      apiKey: document.getElementById('apiKey')
     };
+
+    const AI_KEY_STORAGE = 'firstday_kie_api_key_v1';
 
     const ui = {
       years: document.getElementById('years'),
@@ -298,20 +306,76 @@
       return updated;
     }
 
+
+
+    async function fetchGeminiMotivation(data, signal) {
+      const key = fields.apiKey.value.trim();
+      if (!key) return null;
+
+      const prompt = `Дай 1 короткую мотивационную цитату на русском (до 20 слов),
+без эмодзи, обращенную к человеку по имени ${data.name},
+который воздерживается от: ${data.habit}.`;
+
+      const res = await fetch('https://api.kie.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model: 'gemini-2.5-pro',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 80
+        }),
+        signal
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json();
+      const content = payload?.choices?.[0]?.message?.content?.trim();
+      return content || null;
+    }
+
+    async function applyMotivation(data) {
+      ui.quote.textContent = `«${getRandomQuote(data.habit)}»`;
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const aiQuote = await fetchGeminiMotivation(data, ctrl.signal);
+        if (aiQuote) ui.quote.textContent = `«${aiQuote.replace(/^"|"$/g, '')}»`;
+      } catch (_) {
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
     function startTracking(data) {
       if (timerId) clearInterval(timerId);
       const withReminder = maybeDailyReminder(data);
       ui.greeting.textContent = `${withReminder.name}, ты выбрал(а) путь без «${withReminder.habit}». Держись!`;
-      ui.quote.textContent = `«${getRandomQuote(withReminder.habit)}»`;
+      applyMotivation(withReminder);
       updateCounter(withReminder);
       timerId = setInterval(() => updateCounter(withReminder), 1000);
     }
+
+    document.getElementById('testAiBtn').addEventListener('click', async () => {
+      if (!fields.apiKey.value.trim()) {
+        alert('Сначала вставь API ключ Kie.ai.');
+        return;
+      }
+      const probe = { name: fields.name.value.trim() || 'Друг', habit: fields.habit.value || 'Алкоголь' };
+      ui.quote.textContent = 'Проверка подключения к Gemini...';
+      await applyMotivation(probe);
+      alert('Подключение проверено: цитата обновлена.');
+    });
 
     document.getElementById('saveBtn').addEventListener('click', () => {
       if (!fields.name.value.trim() || !fields.startDate.value) {
         alert('Пожалуйста, укажи имя и дату начала.');
         return;
       }
+      localStorage.setItem(AI_KEY_STORAGE, fields.apiKey.value.trim());
       const data = {
         name: fields.name.value.trim(),
         birthDate: fields.birthDate.value || null,
@@ -325,6 +389,7 @@
 
     document.getElementById('resetBtn').addEventListener('click', () => {
       const saved = getSaved();
+      fields.apiKey.value = localStorage.getItem(AI_KEY_STORAGE) || '';
       if (!saved) return;
       const resetData = { ...saved, startDate: new Date().toISOString(), lastReminderDate: null };
       saveData(resetData);
@@ -334,6 +399,7 @@
     function load() {
       setDefaultStartDate();
       const saved = getSaved();
+      fields.apiKey.value = localStorage.getItem(AI_KEY_STORAGE) || '';
       if (!saved) return;
       fields.name.value = saved.name || '';
       fields.birthDate.value = saved.birthDate || '';
@@ -341,6 +407,7 @@
       const sd = new Date(saved.startDate);
       sd.setMinutes(sd.getMinutes() - sd.getTimezoneOffset());
       fields.startDate.value = sd.toISOString().slice(0,16);
+      fields.apiKey.value = localStorage.getItem(AI_KEY_STORAGE) || '';
       startTracking(saved);
     }
 
